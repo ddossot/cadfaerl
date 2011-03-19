@@ -11,7 +11,7 @@
 -module(cacherl).
 -behaviour(gen_server).
 
--export([start_link/1, start_link/2, put/3, put_ttl/4, get/2, get/3, get_or_fetch/3]).
+-export([start_link/1, start_link/2, put/3, put_ttl/4, get/2, get/3, get_or_fetch/3, get_or_fetch_ttl/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -record(state, {name, maximum_size, data_dict, time_tree}).
@@ -40,54 +40,44 @@ put(CacheName, Key, Value) when is_atom(CacheName) ->
 %% @doc Put an expirable value with a time to live in seconds.
 %% @spec put_ttl(CacheName::atom(), Key::term(), Value::term(), Ttl::integer()) -> ok
 put_ttl(CacheName, Key, Value, Ttl) when is_atom(CacheName), Ttl =:= undefined orelse is_integer(Ttl) ->
-  Timestamp = timestamp(),
-  ExpireAt = expire_at(Timestamp, Ttl),
   % call and not cast because we want certainty it's been stored
-  gen_server:call(CacheName, {put, Key, #datum{value=Value, timestamp=Timestamp, expire_at=ExpireAt}}).
+  gen_server:call(CacheName, {put, Key, Value, Ttl}).
 
 %% @doc Get a value, returning undefined if not found.
 %% @spec get(CacheName::atom(), Key::term()) -> {ok, Value::term()} | undefined
 get(CacheName, Key) when is_atom(CacheName) ->
-  gen_server:call(CacheName, {get, Key}).
-
-%% @doc Get a value, returning the specified default value if not found.
-%% @spec get(CacheName::atom(), Key::term(), Default::term()) -> {ok, Value::term()}
-get(CacheName, Key, Default) when is_atom(CacheName) ->
-  case get(CacheName, Key) of 
-    undefined ->
-      {ok, Default};
-    Value ->
-      Value
-  end.
+  get(CacheName, Key, undefined).
 
 %% @doc Get a value, using the provided fun/0 to fetch it if not found in cache.
 %% @spec get_or_fetch(CacheName::atom(), Key::term(), Default::term()) -> {ok, Value::term()} | {error, Error::term()}
 get_or_fetch(CacheName, Key, FetchFun) when is_atom(CacheName), is_function(FetchFun, 0) ->
-  throw(implement_me).
+  get(CacheName, Key, FetchFun).
 
+%% @doc Get a value, using the provided fun/0 to fetch it if not found in cache, storing the new value with the provided Ttl.
+%% @spec get_or_fetch_ttl(CacheName::atom(), Key::term(), Default::term(), Ttl::integer()) -> {ok, Value::term()} | {error, Error::term()}
+get_or_fetch_ttl(CacheName, Key, FetchFun, Ttl) when is_atom(CacheName), is_function(FetchFun, 0), Ttl =:= undefined orelse is_integer(Ttl) ->
+  do_get(CacheName, Key, FetchFun, Ttl).
+
+%% @doc Get a value, returning the specified default value if not found.
+%% @spec get(CacheName::atom(), Key::term(), Default::term()) -> {ok, Value::term()}
+get(CacheName, Key, Default) when is_atom(CacheName) ->
+  do_get(CacheName, Key, Default, undefined).
+
+do_get(CacheName, Key, Default, Ttl) ->
+  gen_server:call(CacheName, {get, Key, Default, Ttl}).
+  
 %---------------------------
 % Gen Server Implementation
 % --------------------------
 init([Name, MaximumSize]) ->
   {ok, #state{name=Name, maximum_size=MaximumSize, data_dict=dict:new(), time_tree=gb_trees:empty()}}.
 
-handle_call({put, Key, Datum}, _From, State=#state{maximum_size=undefined, data_dict=DataDict}) ->
-  {reply, ok, State#state{data_dict=put_in_dict(Key, Datum, DataDict)}};
+handle_call({put, Key, Value, Ttl}, _From, State) ->
+  {reply, ok, put_in_state(Key, Value, Ttl, State)};
   
-handle_call({put, Key, Datum}, _From, State=#state{maximum_size=MaxSize, data_dict=DataDict, time_tree=TimeTree}) ->
-  % FIXME handle MaxSize
-  {reply, ok, State#state{data_dict=put_in_dict(Key, Datum, DataDict), time_tree=put_in_tree(Key, Datum, TimeTree)}};
-  
-handle_call({get, Key}, _From, State=#state{maximum_size=MaxSize, data_dict=DataDict, time_tree=TimeTree}) ->
-  % FIXME handle expiration, refresh LRU
-  Result =
-    case dict:find(Key, DataDict) of
-      error ->
-        undefined;
-      {ok, #datum{value=Value}} ->
-        {ok, Value}
-    end,
-  {reply, Result, State};
+handle_call({get, Key, Default, Ttl}, _From, State) ->
+  {Result, NewState} = get_from_state(Key, Default, Ttl, State),
+  {reply, Result, NewState};
   
 handle_call(Unsupported, _From, State) ->
   error_logger:error_msg("Received unsupported message in handle_call: ~p", [Unsupported]),
@@ -120,11 +110,49 @@ expire_at(_, undefined) ->
 expire_at(Timestamp, Ttl) when is_integer(Timestamp), is_integer(Ttl) ->
   Timestamp + Ttl.
 
+put_in_state(Key, Value, Ttl, State=#state{maximum_size=MaxSize, data_dict=DataDict, time_tree=TimeTree}) ->
+  Timestamp = timestamp(),
+  ExpireAt = expire_at(Timestamp, Ttl),
+  Datum = #datum{value=Value, timestamp=Timestamp, expire_at=ExpireAt},
+  
+  case MaxSize of
+    undefined ->
+      State#state{data_dict=put_in_dict(Key, Datum, DataDict)};
+    MaxSize ->
+      % FIXME handle MaxSize
+      State#state{data_dict=put_in_dict(Key, Datum, DataDict), time_tree=put_in_tree(Key, Datum, TimeTree)}
+  end.
+  
 put_in_dict(Key, Datum, DataDict) ->
   dict:store(Key, Datum, DataDict).
   
 put_in_tree(Key, #datum{timestamp=Timestamp}, TimeTree) ->
-  gb_trees:insert(Timestamp, Key, TimeTree).
+  gb_trees:enter(Timestamp, Key, TimeTree).
+
+get_from_state(Key, Default, Ttl, State=#state{data_dict=DataDict}) ->
+  Timestamp = timestamp(),
+  
+  case dict:find(Key, DataDict) of
+    error ->
+      handle_cache_miss(Key, Default, Ttl, State);
+      
+    {ok, #datum{expire_at=ExpireAt}} when Timestamp >= ExpireAt ->
+      % FIXME delete from state
+      handle_cache_miss(Key, Default, Ttl, State);
+    
+    {ok, #datum{value=Value}} ->
+      {{ok, Value}, State}
+  end.
+
+handle_cache_miss(Key, Default, Ttl, State) when is_function(Default, 0) ->
+  % FIXME must catch exceptions and return {error, _}
+  Value = Default(),
+  {{ok, Value}, put_in_state(Key, Value, Ttl, State)};
+handle_cache_miss(_, Default, _, State) when Default =:= undefined ->
+  {undefined, State};
+handle_cache_miss(_, Default, _, State) ->
+  {{ok, Default}, State}.
+  
 %---------------------------
 % Tests
 % --------------------------
