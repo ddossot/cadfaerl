@@ -11,7 +11,8 @@
 -module(cacherl).
 -behaviour(gen_server).
 
--export([start_link/1, start_link/2, put/3, put_ttl/4, get/2, get/3, get_or_fetch/3, get_or_fetch_ttl/4]).
+-export([start_link/1, start_link/2, stop/1,
+         put/3, put_ttl/4, get/2, get/3, get_or_fetch/3, get_or_fetch_ttl/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -record(state, {name, maximum_size, data_dict, time_tree}).
@@ -22,7 +23,7 @@
 %---------------------------
 % Public API
 % --------------------------
-%% @doc Start a cache with not maximum size.
+%% @doc Start a cache with no maximum size.
 %% @spec start_link(CacheName::atom()) -> {ok, Pid::pid()} | ignore | {error, Error::term()}
 start_link(CacheName) when is_atom(CacheName) ->
   start_link(CacheName, undefined).
@@ -31,6 +32,11 @@ start_link(CacheName) when is_atom(CacheName) ->
 %% @spec start_link(CacheName::atom(), MaximumSize::integer()) -> {ok, Pid::pid()} | ignore | {error, Error::term()}
 start_link(CacheName, MaximumSize) when is_atom(CacheName), MaximumSize =:= undefined orelse is_integer(MaximumSize) ->
   gen_server:start_link({local, CacheName}, ?MODULE, [CacheName, MaximumSize], []).
+
+%% @doc Stop a cache.
+%% @spec stop(CacheName::atom()) -> ok
+stop(CacheName) when is_atom(CacheName) ->
+  gen_server:cast(CacheName, stop).  
 
 %% @doc Put a non-expirabled value.
 %% @spec put(CacheName::atom(), Key::term(), Value::term()) -> ok
@@ -42,6 +48,8 @@ put(CacheName, Key, Value) when is_atom(CacheName) ->
 put_ttl(CacheName, Key, Value, Ttl) when is_atom(CacheName), Ttl =:= undefined orelse is_integer(Ttl) ->
   % call and not cast because we want certainty it's been stored
   gen_server:call(CacheName, {put, Key, Value, Ttl}).
+
+% FIXME delete(CacheName, Key)
 
 %% @doc Get a value, returning undefined if not found.
 %% @spec get(CacheName::atom(), Key::term()) -> {ok, Value::term()} | undefined
@@ -83,6 +91,9 @@ handle_call(Unsupported, _From, State) ->
   error_logger:error_msg("Received unsupported message in handle_call: ~p", [Unsupported]),
   {reply, {error, {unsupported, Unsupported}}, State}.
 
+handle_cast(stop, State) ->
+  {stop, normal, State};
+    
 handle_cast(Unsupported, State) ->
   error_logger:error_msg("Received unsupported message in handle_cast: ~p", [Unsupported]),
   {noreply, State}.
@@ -122,7 +133,7 @@ put_in_state(Key, Value, Ttl, State=#state{maximum_size=MaxSize, data_dict=DataD
       % FIXME handle MaxSize
       State#state{data_dict=put_in_dict(Key, Datum, DataDict), time_tree=put_in_tree(Key, Datum, TimeTree)}
   end.
-  
+
 put_in_dict(Key, Datum, DataDict) ->
   dict:store(Key, Datum, DataDict).
   
@@ -157,6 +168,47 @@ handle_cache_miss(_, Default, _, State) ->
 % Tests
 % --------------------------
 -ifdef(TEST).
-% FIXME add tests
+-include_lib("eunit/include/eunit.hrl").
+
+basic_put_get_test() ->
+  {ok, _Pid} = start_link(basic),
+  ?assertEqual(undefined, get(basic, my_key)),
+  ?assertEqual(ok, put(basic, my_key, "my_val")),
+  ?assertEqual({ok, "my_val"}, get(basic, my_key)),
+  ?assertEqual(ok, put(basic, my_key, <<"other_val">>)),
+  ?assertEqual({ok, <<"other_val">>}, get(basic, my_key)),
+  ok = stop(basic).
+
+ttl_put_get_test() ->
+  {ok, _Pid} = start_link(ttl),
+  ?assertEqual(undefined, get(ttl, my_key)),
+  ?assertEqual(ok, put_ttl(ttl, my_key, "my_val", 1)),
+  ?assertEqual({ok, "my_val"}, get(ttl, my_key)),
+  timer:sleep(1100),
+  ?assertEqual(undefined, get(ttl, my_key)),
+
+  ?assertEqual(ok, put_ttl(ttl, my_key, "my_val2", 1)),
+  ?assertEqual({ok, "my_val2"}, get(ttl, my_key)),
+  ?assertEqual(ok, put(ttl, my_key, "my_val3")),
+  timer:sleep(1100),
+  ?assertEqual({ok, "my_val3"}, get(ttl, my_key)),
+  ok = stop(ttl).
+
+get_or_fetch_test() ->
+  {ok, _Pid} = start_link(fetch),
+  ?assertEqual({ok, 123}, get_or_fetch(fetch, my_key, fun() -> 123 end)),
+  ?assertEqual({ok, 123}, get(fetch, my_key)),
+  ok = stop(fetch).
+
+get_or_fetch_ttl_test() ->
+  {ok, _Pid} = start_link(fetch_ttl),
+  FetchFun = fun() -> now() end,
+  {ok, Val1} = get_or_fetch_ttl(fetch_ttl, my_key, FetchFun, 1),
+  ?assertEqual({ok, Val1}, get_or_fetch_ttl(fetch_ttl, my_key, FetchFun, 1)),
+  timer:sleep(1100),
+  {ok, Val2} = get_or_fetch_ttl(fetch_ttl, my_key, FetchFun, 1),
+  ?assert(Val1 =/= Val2),
+  ok = stop(fetch_ttl).
+  
 -endif.
 
