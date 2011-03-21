@@ -194,6 +194,19 @@ ttl_put_get_test() ->
   ?assertEqual({ok, "my_val3"}, get(ttl, my_key)),
   ok = stop(ttl).
 
+default_put_get_test() ->
+  {ok, _Pid} = start_link(default),
+  ?assertEqual(undefined, get(default, my_key)),
+  ?assertEqual({ok, 'DEF'}, get(default, my_key, 'DEF')),
+  ?assertEqual(ok, put(default, my_key, "my_val")),
+  ?assertEqual({ok, "my_val"}, get(default, my_key, 'DEF')),
+
+  ?assertEqual(ok, put_ttl(default, my_key, "my_val2", 1)),
+  ?assertEqual({ok, "my_val2"}, get(default, my_key, 'DEF')),
+  timer:sleep(1100),
+  ?assertEqual({ok, 'DEF'}, get(default, my_key, 'DEF')),
+  ok = stop(default).
+
 get_or_fetch_test() ->
   {ok, _Pid} = start_link(fetch),
   ?assertEqual({ok, 123}, get_or_fetch(fetch, my_key, fun() -> 123 end)),
