@@ -12,11 +12,15 @@
 -behaviour(gen_server).
 
 -export([start_link/1, start_link/2, stop/1,
-         put/3, put_ttl/4, get/2, get/3, get_or_fetch/3, get_or_fetch_ttl/4]).
+         put/3, put_ttl/4,
+         get/2, get/3,
+         get_or_fetch/3, get_or_fetch_ttl/4,
+         reset/1]).
+         
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--record(state, {name, maximum_size, data_dict, time_tree}).
--record(datum, {value, timestamp, expire_at}).
+-record(state, {name, clock, maximum_size, data_dict, time_tree}).
+-record(datum, {value, clockstamp, expire_at}).
 
 % FIXME add basic stats
 
@@ -50,7 +54,6 @@ put_ttl(CacheName, Key, Value, Ttl) when is_atom(CacheName), Ttl =:= undefined o
   gen_server:call(CacheName, {put, Key, Value, Ttl}).
 
 % FIXME add: delete(CacheName, Key)
-% FIXME add: flush(CacheName)
 
 %% @doc Get a value, returning undefined if not found.
 %% @spec get(CacheName::atom(), Key::term()) -> {ok, Value::term()} | undefined
@@ -74,12 +77,17 @@ get(CacheName, Key, Default) when is_atom(CacheName) ->
 
 do_get(CacheName, Key, Default, Ttl) ->
   gen_server:call(CacheName, {get, Key, Default, Ttl}).
+
+%% @doc Reset the cache, losing all its content.
+%% @spec reset(CacheName::atom()) -> ok
+reset(CacheName) when is_atom(CacheName) ->
+  gen_server:call(CacheName, reset).  
   
 %---------------------------
 % Gen Server Implementation
 % --------------------------
 init([Name, MaximumSize]) ->
-  {ok, #state{name=Name, maximum_size=MaximumSize, data_dict=dict:new(), time_tree=gb_trees:empty()}}.
+  {ok, initial_state(Name, MaximumSize)}.
 
 handle_call({put, Key, Value, Ttl}, _From, State) ->
   {reply, ok, put_in_state(Key, Value, Ttl, State)};
@@ -87,6 +95,9 @@ handle_call({put, Key, Value, Ttl}, _From, State) ->
 handle_call({get, Key, Default, Ttl}, _From, State) ->
   {Result, NewState} = get_from_state(Key, Default, Ttl, State),
   {reply, Result, NewState};
+  
+handle_call(reset, _From, State) ->
+  {reply, ok, reset_state(State)};
   
 handle_call(Unsupported, _From, State) ->
   error_logger:error_msg("Received unsupported message in handle_call: ~p", [Unsupported]),
@@ -112,6 +123,11 @@ code_change(_OldVsn, State, _Extra) ->
 %---------------------------
 % Support Functions
 % --------------------------
+initial_state(Name, MaximumSize) ->
+  #state{name=Name, clock=0, maximum_size=MaximumSize, data_dict=dict:new(), time_tree=gb_trees:empty()}.
+  
+reset_state(#state{name=Name, maximum_size=MaximumSize}) ->
+  initial_state(Name, MaximumSize).
 
 timestamp() ->
    {MegaSecs, Secs, _} = now(),
@@ -122,23 +138,23 @@ expire_at(_, undefined) ->
 expire_at(Timestamp, Ttl) when is_integer(Timestamp), is_integer(Ttl) ->
   Timestamp + Ttl.
 
-put_in_state(Key, Value, Ttl, State=#state{maximum_size=MaxSize, data_dict=DataDict, time_tree=TimeTree}) ->
+put_in_state(Key, Value, Ttl, State=#state{maximum_size=MaximumSize, data_dict=DataDict, time_tree=TimeTree}) ->
   Timestamp = timestamp(),
   ExpireAt = expire_at(Timestamp, Ttl),
-  Datum = #datum{value=Value, timestamp=Timestamp, expire_at=ExpireAt},
+  Datum = #datum{value=Value, expire_at=ExpireAt},
   
-  case MaxSize of
+  case MaximumSize of
     undefined ->
       State#state{data_dict=put_in_dict(Key, Datum, DataDict)};
-    MaxSize ->
-      % FIXME handle MaxSize
+    _ ->
+      % FIXME handle MaximumSize
       State#state{data_dict=put_in_dict(Key, Datum, DataDict), time_tree=put_in_tree(Key, Datum, TimeTree)}
   end.
 
 put_in_dict(Key, Datum, DataDict) ->
   dict:store(Key, Datum, DataDict).
   
-put_in_tree(Key, #datum{timestamp=Timestamp}, TimeTree) ->
+put_in_tree(Key, #datum{clockstamp=Timestamp}, TimeTree) ->
   gb_trees:enter(Timestamp, Key, TimeTree).
 
 get_from_state(Key, Default, Ttl, State=#state{data_dict=DataDict}) ->
@@ -176,59 +192,71 @@ handle_cache_miss(_, Default, _, State) ->
 -include_lib("eunit/include/eunit.hrl").
 
 basic_put_get_test() ->
-  {ok, _Pid} = start_link(basic),
-  ?assertEqual(undefined, get(basic, my_key)),
-  ?assertEqual(ok, put(basic, my_key, "my_val")),
-  ?assertEqual({ok, "my_val"}, get(basic, my_key)),
-  ?assertEqual(ok, put(basic, my_key, <<"other_val">>)),
-  ?assertEqual({ok, <<"other_val">>}, get(basic, my_key)),
-  ok = stop(basic).
+  {ok, _Pid} = start_link(basic_cache),
+  ?assertEqual(undefined, get(basic_cache, my_key)),
+  ?assertEqual(ok, put(basic_cache, my_key, "my_val")),
+  ?assertEqual({ok, "my_val"}, get(basic_cache, my_key)),
+  ?assertEqual(ok, put(basic_cache, my_key, <<"other_val">>)),
+  ?assertEqual({ok, <<"other_val">>}, get(basic_cache, my_key)),
+  ok = stop(basic_cache).
 
 ttl_put_get_test() ->
-  {ok, _Pid} = start_link(ttl),
-  ?assertEqual(undefined, get(ttl, my_key)),
-  ?assertEqual(ok, put_ttl(ttl, my_key, "my_val", 1)),
-  ?assertEqual({ok, "my_val"}, get(ttl, my_key)),
+  {ok, _Pid} = start_link(ttl_cache),
+  ?assertEqual(undefined, get(ttl_cache, my_key)),
+  ?assertEqual(ok, put_ttl(ttl_cache, my_key, "my_val", 1)),
+  ?assertEqual({ok, "my_val"}, get(ttl_cache, my_key)),
   timer:sleep(1100),
-  ?assertEqual(undefined, get(ttl, my_key)),
+  ?assertEqual(undefined, get(ttl_cache, my_key)),
 
-  ?assertEqual(ok, put_ttl(ttl, my_key, "my_val2", 1)),
-  ?assertEqual({ok, "my_val2"}, get(ttl, my_key)),
-  ?assertEqual(ok, put(ttl, my_key, "my_val3")),
+  ?assertEqual(ok, put_ttl(ttl_cache, my_key, "my_val2", 1)),
+  ?assertEqual({ok, "my_val2"}, get(ttl_cache, my_key)),
+  ?assertEqual(ok, put(ttl_cache, my_key, "my_val3")),
   timer:sleep(1100),
-  ?assertEqual({ok, "my_val3"}, get(ttl, my_key)),
-  ok = stop(ttl).
+  ?assertEqual({ok, "my_val3"}, get(ttl_cache, my_key)),
+  ok = stop(ttl_cache).
 
 default_put_get_test() ->
-  {ok, _Pid} = start_link(default),
-  ?assertEqual(undefined, get(default, my_key)),
-  ?assertEqual({ok, 'DEF'}, get(default, my_key, 'DEF')),
-  ?assertEqual(ok, put(default, my_key, "my_val")),
-  ?assertEqual({ok, "my_val"}, get(default, my_key, 'DEF')),
+  {ok, _Pid} = start_link(default_cache),
+  ?assertEqual(undefined, get(default_cache, my_key)),
+  ?assertEqual({ok, 'DEF'}, get(default_cache, my_key, 'DEF')),
+  ?assertEqual(ok, put(default_cache, my_key, "my_val")),
+  ?assertEqual({ok, "my_val"}, get(default_cache, my_key, 'DEF')),
 
-  ?assertEqual(ok, put_ttl(default, my_key, "my_val2", 1)),
-  ?assertEqual({ok, "my_val2"}, get(default, my_key, 'DEF')),
+  ?assertEqual(ok, put_ttl(default_cache, my_key, "my_val2", 1)),
+  ?assertEqual({ok, "my_val2"}, get(default_cache, my_key, 'DEF')),
   timer:sleep(1100),
-  ?assertEqual({ok, 'DEF'}, get(default, my_key, 'DEF')),
-  ok = stop(default).
+  ?assertEqual({ok, 'DEF'}, get(default_cache, my_key, 'DEF')),
+  ok = stop(default_cache).
 
 get_or_fetch_test() ->
-  {ok, _Pid} = start_link(fetch),
-  ?assertEqual({ok, 123}, get_or_fetch(fetch, my_key, fun() -> 123 end)),
-  ?assertEqual({ok, 123}, get(fetch, my_key)),
-  ?assertEqual({error, {throw, foo}}, get_or_fetch(fetch, other_key, fun() -> throw(foo) end)),
-  ?assertEqual(undefined, get(fetch, other_key)),
-  ok = stop(fetch).
+  {ok, _Pid} = start_link(fetch_cache),
+  ?assertEqual({ok, 123}, get_or_fetch(fetch_cache, my_key, fun() -> 123 end)),
+  ?assertEqual({ok, 123}, get(fetch_cache, my_key)),
+  ?assertEqual({error, {throw, foo}}, get_or_fetch(fetch_cache, other_key, fun() -> throw(foo) end)),
+  ?assertEqual(undefined, get(fetch_cache, other_key)),
+  ok = stop(fetch_cache).
 
 get_or_fetch_ttl_test() ->
-  {ok, _Pid} = start_link(fetch_ttl),
+  {ok, _Pid} = start_link(fetch_ttl_cache),
   FetchFun = fun() -> now() end,
-  {ok, Val1} = get_or_fetch_ttl(fetch_ttl, my_key, FetchFun, 1),
-  ?assertEqual({ok, Val1}, get_or_fetch_ttl(fetch_ttl, my_key, FetchFun, 1)),
+  {ok, Val1} = get_or_fetch_ttl(fetch_ttl_cache, my_key, FetchFun, 1),
+  ?assertEqual({ok, Val1}, get_or_fetch_ttl(fetch_ttl_cache, my_key, FetchFun, 1)),
   timer:sleep(1100),
-  {ok, Val2} = get_or_fetch_ttl(fetch_ttl, my_key, FetchFun, 1),
+  {ok, Val2} = get_or_fetch_ttl(fetch_ttl_cache, my_key, FetchFun, 1),
   ?assert(Val1 =/= Val2),
-  ok = stop(fetch_ttl).
+  ok = stop(fetch_ttl_cache).
   
+reset_test() ->
+  InitialState = initial_state(my_name, 123),
+  ChangedState = InitialState#state{clock=25},
+  ?assertEqual(InitialState, reset_state(ChangedState)),
+  
+  {ok, _Pid} = start_link(reset_cache),
+  ?assertEqual(ok, put(reset_cache, my_key, "my_val")),
+  ?assertEqual({ok, "my_val"}, get(reset_cache, my_key)),
+  ?assertEqual(ok, reset(reset_cache)),
+  ?assertEqual(undefined, get(reset_cache, my_key)),
+  ok = stop(reset_cache).
+
 -endif.
 
