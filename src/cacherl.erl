@@ -49,7 +49,8 @@ put_ttl(CacheName, Key, Value, Ttl) when is_atom(CacheName), Ttl =:= undefined o
   % call and not cast because we want certainty it's been stored
   gen_server:call(CacheName, {put, Key, Value, Ttl}).
 
-% FIXME delete(CacheName, Key)
+% FIXME add: delete(CacheName, Key)
+% FIXME add: flush(CacheName)
 
 %% @doc Get a value, returning undefined if not found.
 %% @spec get(CacheName::atom(), Key::term()) -> {ok, Value::term()} | undefined
@@ -156,9 +157,13 @@ get_from_state(Key, Default, Ttl, State=#state{data_dict=DataDict}) ->
   end.
 
 handle_cache_miss(Key, Default, Ttl, State) when is_function(Default, 0) ->
-  % FIXME must catch exceptions and return {error, _}
-  Value = Default(),
-  {{ok, Value}, put_in_state(Key, Value, Ttl, State)};
+  try
+    Value = Default(),
+    {{ok, Value}, put_in_state(Key, Value, Ttl, State)}
+  catch
+    Type:Reason ->
+      {{error, {Type, Reason}}, State}
+  end;
 handle_cache_miss(_, Default, _, State) when Default =:= undefined ->
   {undefined, State};
 handle_cache_miss(_, Default, _, State) ->
@@ -211,6 +216,8 @@ get_or_fetch_test() ->
   {ok, _Pid} = start_link(fetch),
   ?assertEqual({ok, 123}, get_or_fetch(fetch, my_key, fun() -> 123 end)),
   ?assertEqual({ok, 123}, get(fetch, my_key)),
+  ?assertEqual({error, {throw, foo}}, get_or_fetch(fetch, other_key, fun() -> throw(foo) end)),
+  ?assertEqual(undefined, get(fetch, other_key)),
   ok = stop(fetch).
 
 get_or_fetch_ttl_test() ->
