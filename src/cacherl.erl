@@ -23,8 +23,8 @@
 -record(state, {name, clock, maximum_size, data_dict, clock_tree}).
 -record(datum, {value, clockstamp, expire_at}).
 
-% FIXME add: basic stats
-% FIXME add: delete(CacheName, Key)
+% TODO add: delete(CacheName, Key)
+% TODO add: basic stats
 
 %---------------------------
 % Public API
@@ -149,26 +149,27 @@ expire_at(_, undefined) ->
 expire_at(Timestamp, Ttl) when is_integer(Timestamp), is_integer(Ttl) ->
   Timestamp + Ttl.
 
-put_in_state(Key, Value, Ttl, State=#state{clock=Clock}) ->
+put_in_state(Key, Value, Ttl, State) ->
   Timestamp = timestamp(),
   ExpireAt = expire_at(Timestamp, Ttl),
-  Datum = #datum{clockstamp=Clock, value=Value, expire_at=ExpireAt},
+  Datum = #datum{value=Value, expire_at=ExpireAt},
   put_datum_in_state(Key, Datum, State).
 
 put_datum_in_state(Key, Datum, State=#state{maximum_size=undefined, data_dict=DataDict}) ->
   State#state{data_dict=dict:store(Key, Datum, DataDict)};
 put_datum_in_state(Key, Datum, State=#state{maximum_size=MaximumSize, clock=Clock}) ->
+  ClockStampedDatum = Datum#datum{clockstamp=Clock},
   StateRemoved = #state{data_dict=DataDict, clock_tree=ClockTree} = remove_from_state(Key, State),
   NewClockTree = gb_trees:enter(Clock, Key, ClockTree),
   
-  % FIXME refactor for readibility
+  % TODO refactor for readibility
   case gb_trees:size(NewClockTree) > MaximumSize of
     false ->
-      increment_clock(StateRemoved#state{data_dict=dict:store(Key, Datum, DataDict), clock_tree=NewClockTree});
+      increment_clock(StateRemoved#state{data_dict=dict:store(Key, ClockStampedDatum, DataDict), clock_tree=NewClockTree});
     true ->
       {_, CulledKey, CulledClockTree} = gb_trees:take_smallest(NewClockTree),
       CulledDataDict = dict:erase(CulledKey, DataDict),
-      increment_clock(StateRemoved#state{data_dict=dict:store(Key, Datum, CulledDataDict), clock_tree=CulledClockTree})
+      increment_clock(StateRemoved#state{data_dict=dict:store(Key, ClockStampedDatum, CulledDataDict), clock_tree=CulledClockTree})
   end.
 
 remove_from_state(Key, State=#state{data_dict=DataDict}) ->
@@ -286,10 +287,9 @@ lru_cache_test() ->
   ?assertEqual({ok, "my_val1"}, get(lru_cache, my_key1)),
   ?assertEqual(ok, put(lru_cache, my_key3, "my_val3")),
   ?assertEqual(2, size(lru_cache)),
-  % FIXME reactivate... and fix!
-%  ?assertEqual({ok, "my_val1"}, get(lru_cache, my_key1)),
-%  ?assertEqual(undefined, get(lru_cache, my_key2)),
-%  ?assertEqual({ok, "my_val3"}, get(lru_cache, my_key3)),
+  ?assertEqual({ok, "my_val1"}, get(lru_cache, my_key1)),
+  ?assertEqual(undefined, get(lru_cache, my_key2)),
+  ?assertEqual({ok, "my_val3"}, get(lru_cache, my_key3)),
   ok = stop(lru_cache).
   
 reset_test() ->
