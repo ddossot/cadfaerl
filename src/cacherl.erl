@@ -16,6 +16,7 @@
          put/3, put_ttl/4,
          get/2, get/3,
          get_or_fetch/3, get_or_fetch_ttl/4,
+         remove/2,
          size/1, reset/1]).
          
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -23,7 +24,6 @@
 -record(state, {name, clock, maximum_size, data_dict, clock_tree}).
 -record(datum, {value, clockstamp, expire_at}).
 
-% TODO add: delete(CacheName, Key)
 % TODO add: basic stats
 
 %---------------------------
@@ -78,6 +78,11 @@ get(CacheName, Key, Default) when is_atom(CacheName) ->
 do_get(CacheName, Key, Default, Ttl) ->
   gen_server:call(CacheName, {get, Key, Default, Ttl}).
 
+%% @doc Remove a value or ignore the command if the key is not present.
+%% @spec remove(CacheName::atom(), Key::term()) -> ok
+remove(CacheName, Key) when is_atom(CacheName) ->
+  gen_server:call(CacheName, {remove, Key}).
+
 %% @doc Size of the cache, in number of stored elements.
 %% @spec size(CacheName::atom()) -> Size::integer()
 size(CacheName) when is_atom(CacheName) ->
@@ -101,6 +106,9 @@ handle_call({get, Key, Default, Ttl}, _From, State) ->
   {Result, NewState} = get_from_state(Key, Default, Ttl, State),
   {reply, Result, NewState};
   
+handle_call({remove, Key}, _From, State) ->
+  {reply, ok, remove_from_state(Key, State)};
+
 handle_call(size, _From, State=#state{data_dict=DataDict}) ->
   {reply, dict:size(DataDict), State};
   
@@ -220,7 +228,7 @@ handle_cache_hit(Key, Datum=#datum{value=Value}, State) ->
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
-basic_put_get_test() ->
+basic_put_get_remove_test() ->
   {ok, _Pid} = start_link(basic_cache),
   ?assertEqual(undefined, get(basic_cache, my_key)),
   ?assertEqual(ok, put(basic_cache, my_key, "my_val")),
@@ -228,6 +236,9 @@ basic_put_get_test() ->
   ?assertEqual(ok, put(basic_cache, my_key, <<"other_val">>)),
   ?assertEqual({ok, <<"other_val">>}, get(basic_cache, my_key)),
   ?assertEqual(1, size(basic_cache)),
+  ?assertEqual(ok, remove(basic_cache, my_key)),
+  ?assertEqual(undefined, get(basic_cache, my_key)),
+  ?assertEqual(0, size(basic_cache)),
   ok = stop(basic_cache).
 
 ttl_put_get_test() ->
