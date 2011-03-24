@@ -29,11 +29,11 @@ Compile, test and document with:
 
 Start a cache with no size limit:
 
-    {ok, Pid} = cadfaerl:start(my_cache).
+    {ok, Pid} = cadfaerl:start_link(my_cache).
 
 Start a LRU cache with a size limit of 1000:
 
-    {ok, Pid} = cadfaerl:start(my_cache, 1000).
+    {ok, Pid} = cadfaerl:start_link(my_cache, 1000).
 
 Put and get a value (keys and values are any term):
 
