@@ -1,0 +1,7 @@
+{application, cadfaerl,
+ [{description, "cadfaerl - In-vm non-persistent local cache for Erlang"},
+  {vsn, "1.0"},
+  {modules, [cadfaerl]},
+  {registered, []},
+  {env, []},
+  {applications, [kernel, stdlib, crypto, public_key, ssl]}]}.

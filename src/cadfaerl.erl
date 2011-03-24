@@ -1,5 +1,5 @@
 %%%
-%%% @doc <b>cacherl</b>
+%%% @doc <b>cadfaerl</b>
 %%%      In-vm non-persistent local cache for Erlang
 %%%
 %%% @author David Dossot <david@dossot.net>
@@ -8,7 +8,7 @@
 %%% Copyright (c) 2011 David Dossot
 %%%
 
--module(cacherl).
+-module(cadfaerl).
 -compile({no_auto_import,[size/1]}).
 -behaviour(gen_server).
 

@@ -1,8 +1,0 @@
-{application, cacherl,
- [{description, "cacherl - In-vm non-persistent local cache for Erlang"},
-  {vsn, "1.0"},
-  {modules, [
-  ]},
-  {registered, []},
-  {env, []},
-  {applications, [kernel, stdlib, crypto, public_key, ssl]}]}.
