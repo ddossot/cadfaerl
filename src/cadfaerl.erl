@@ -17,14 +17,14 @@
          get/2, get/3,
          get_or_fetch/3, get_or_fetch_ttl/4,
          remove/2,
-         size/1, reset/1]).
+         size/1, reset/1, stats/1]).
          
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--record(state, {name, clock, maximum_size, data_dict, clock_tree}).
+-record(state, {name, clock, maximum_size, data_dict, clock_tree, miss_count, hit_count}).
 -record(datum, {value, clockstamp, expire_at}).
 
-% TODO add: basic stats
+% TODO add: cull
 
 %---------------------------
 % Public API
@@ -91,7 +91,12 @@ size(CacheName) when is_atom(CacheName) ->
 %% @doc Reset the cache, losing all its content.
 %% @spec reset(CacheName::atom()) -> ok
 reset(CacheName) when is_atom(CacheName) ->
-  gen_server:call(CacheName, reset).  
+  gen_server:call(CacheName, reset).
+
+%% @doc Get the stats as a proplist with the following keys: hit_count, miss_count.
+%% @spec stats(CacheName::atom()) -> Stats::proplist()
+stats(CacheName) when is_atom(CacheName) ->
+  gen_server:call(CacheName, stats).  
   
 %---------------------------
 % Gen Server Implementation
@@ -114,6 +119,9 @@ handle_call(size, _From, State=#state{data_dict=DataDict}) ->
   
 handle_call(reset, _From, State) ->
   {reply, ok, reset_state(State)};
+  
+handle_call(stats, _From, State=#state{miss_count=MissCount, hit_count=HitCount}) ->
+  {reply, [{miss_count, MissCount}, {hit_count, HitCount}], State};
   
 handle_call(Unsupported, _From, State) ->
   error_logger:error_msg("Received unsupported message in handle_call: ~p", [Unsupported]),
@@ -140,7 +148,7 @@ code_change(_OldVsn, State, _Extra) ->
 % Support Functions
 % --------------------------
 initial_state(Name, MaximumSize) ->
-  #state{name=Name, clock=0, maximum_size=MaximumSize, data_dict=dict:new(), clock_tree=gb_trees:empty()}.
+  #state{name=Name, clock=0, maximum_size=MaximumSize, data_dict=dict:new(), clock_tree=gb_trees:empty(), hit_count=0, miss_count=0}.
   
 reset_state(#state{name=Name, maximum_size=MaximumSize}) ->
   initial_state(Name, MaximumSize).
@@ -170,11 +178,11 @@ put_datum_in_state(Key, Datum, State=#state{maximum_size=MaximumSize, clock=Cloc
   StateRemoved = #state{data_dict=DataDict, clock_tree=ClockTree} = remove_from_state(Key, State),
   NewClockTree = gb_trees:enter(Clock, Key, ClockTree),
   
-  % TODO refactor for readibility
   case gb_trees:size(NewClockTree) > MaximumSize of
     false ->
       increment_clock(StateRemoved#state{data_dict=dict:store(Key, ClockStampedDatum, DataDict), clock_tree=NewClockTree});
     true ->
+      % if the LRU cache is overflowing, drop the oldest entry, based on its clock value
       {_, CulledKey, CulledClockTree} = gb_trees:take_smallest(NewClockTree),
       CulledDataDict = dict:erase(CulledKey, DataDict),
       increment_clock(StateRemoved#state{data_dict=dict:store(Key, ClockStampedDatum, CulledDataDict), clock_tree=CulledClockTree})
@@ -212,15 +220,21 @@ handle_cache_miss(Key, Default, Ttl, State) when is_function(Default, 0) ->
       {{error, {Type, Reason}}, State}
   end;
 handle_cache_miss(_, Default, _, State) when Default =:= undefined ->
-  {undefined, State};
+  {undefined, record_cache_miss(State)};
 handle_cache_miss(_, Default, _, State) ->
-  {{ok, Default}, State}.
+  {{ok, Default}, record_cache_miss(State)}.
+
+record_cache_miss(State=#state{miss_count=MissCount}) ->
+  State#state{miss_count=MissCount+1}.
 
 handle_cache_hit(_, #datum{value=Value}, State=#state{maximum_size=undefined}) ->
-  {{ok, Value}, State};
+  {{ok, Value}, record_cache_hit(State)};
 handle_cache_hit(Key, Datum=#datum{value=Value}, State) ->
   StateRefreshed = put_datum_in_state(Key, Datum, State),
-  {{ok, Value}, StateRefreshed}.
+  {{ok, Value}, record_cache_hit(StateRefreshed)}.
+
+record_cache_hit(State=#state{hit_count=HitCount}) ->
+  State#state{hit_count=HitCount+1}.
   
 %---------------------------
 % Tests
@@ -228,13 +242,25 @@ handle_cache_hit(Key, Datum=#datum{value=Value}, State) ->
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
-basic_put_get_remove_test() ->
+basic_put_get_remove_stats_test() ->
   {ok, _Pid} = start_link(basic_cache),
+  ?assertEqual([{miss_count, 0}, {hit_count, 0}], stats(basic_cache)),
+
   ?assertEqual(undefined, get(basic_cache, my_key)),
+  ?assertEqual([{miss_count, 1}, {hit_count, 0}], stats(basic_cache)),
+
   ?assertEqual(ok, put(basic_cache, my_key, "my_val")),
+  ?assertEqual([{miss_count, 1}, {hit_count, 0}], stats(basic_cache)),
+
   ?assertEqual({ok, "my_val"}, get(basic_cache, my_key)),
+  ?assertEqual([{miss_count, 1}, {hit_count, 1}], stats(basic_cache)),
+
   ?assertEqual(ok, put(basic_cache, my_key, <<"other_val">>)),
+  ?assertEqual([{miss_count, 1}, {hit_count, 1}], stats(basic_cache)),
+
   ?assertEqual({ok, <<"other_val">>}, get(basic_cache, my_key)),
+  ?assertEqual([{miss_count, 1}, {hit_count, 2}], stats(basic_cache)),
+
   ?assertEqual(1, size(basic_cache)),
   ?assertEqual(ok, remove(basic_cache, my_key)),
   ?assertEqual(undefined, get(basic_cache, my_key)),
@@ -312,7 +338,11 @@ reset_test() ->
   ?assertEqual(ok, put(reset_cache, my_key, "my_val")),
   ?assertEqual({ok, "my_val"}, get(reset_cache, my_key)),
   ?assertEqual(1, size(reset_cache)),
+  ?assertEqual([{miss_count, 0}, {hit_count, 1}], stats(reset_cache)),
+
   ?assertEqual(ok, reset(reset_cache)),
+
+  ?assertEqual([{miss_count, 0}, {hit_count, 0}], stats(reset_cache)),
   ?assertEqual(undefined, get(reset_cache, my_key)),
   ?assertEqual(0, size(reset_cache)),
   ok = stop(reset_cache).
