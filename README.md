@@ -19,6 +19,10 @@
 * Optionally size-limited using a LRU strategy for removing supernumerous entries,
 * Simple hit/miss statistics.
 
+### Limitations
+
+* The cache doesn't regularly auto-prune expired entries.
+
 ### Build
 
 Compile, test and document with:

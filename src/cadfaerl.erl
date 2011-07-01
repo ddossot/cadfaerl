@@ -24,8 +24,6 @@
 -record(state, {name, clock, maximum_size, data_dict, clock_tree, miss_count, hit_count}).
 -record(datum, {value, clockstamp, expire_at}).
 
-% TODO add: cull
-
 %---------------------------
 % Public API
 % --------------------------
@@ -242,7 +240,11 @@ record_cache_hit(State=#state{hit_count=HitCount}) ->
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
+-define(SPEED_TEST_OP_COUNT, 100000).
+
 basic_put_get_remove_stats_test() ->
+  ?debugMsg("running put/get/remove/stats tests"),
+  
   {ok, _Pid} = start_link(basic_cache),
   ?assertEqual([{miss_count, 0}, {hit_count, 0}], stats(basic_cache)),
 
@@ -268,6 +270,8 @@ basic_put_get_remove_stats_test() ->
   ok = stop(basic_cache).
 
 ttl_put_get_test() ->
+  ?debugMsg("running put/get ttl tests"),
+  
   {ok, _Pid} = start_link(ttl_cache),
   ?assertEqual(undefined, get(ttl_cache, my_key)),
   ?assertEqual(ok, put_ttl(ttl_cache, my_key, "my_val", 1)),
@@ -284,6 +288,8 @@ ttl_put_get_test() ->
   ok = stop(ttl_cache).
 
 default_put_get_test() ->
+  ?debugMsg("running put/get w/default tests"),
+  
   {ok, _Pid} = start_link(default_cache),
   ?assertEqual(undefined, get(default_cache, my_key)),
   ?assertEqual({ok, 'DEF'}, get(default_cache, my_key, 'DEF')),
@@ -298,6 +304,8 @@ default_put_get_test() ->
   ok = stop(default_cache).
 
 get_or_fetch_test() ->
+  ?debugMsg("running get_or_fetch() tests"),
+  
   {ok, _Pid} = start_link(fetch_cache),
   ?assertEqual({ok, 123}, get_or_fetch(fetch_cache, my_key, fun() -> 123 end)),
   ?assertEqual({ok, 123}, get(fetch_cache, my_key)),
@@ -306,6 +314,8 @@ get_or_fetch_test() ->
   ok = stop(fetch_cache).
 
 get_or_fetch_ttl_test() ->
+  ?debugMsg("running get_or_fetch_ttl() tests"),
+  
   {ok, _Pid} = start_link(fetch_ttl_cache),
   FetchFun = fun() -> now() end,
   {ok, Val1} = get_or_fetch_ttl(fetch_ttl_cache, my_key, FetchFun, 1),
@@ -316,6 +326,8 @@ get_or_fetch_ttl_test() ->
   ok = stop(fetch_ttl_cache).
 
 lru_cache_test() ->
+  ?debugMsg("running lru cache tests"),
+  
   {ok, _Pid} = start_link(lru_cache, 2),
   ?assertEqual(ok, put(lru_cache, my_key1, "my_val1")),
   ?assertEqual(1, size(lru_cache)),
@@ -330,6 +342,8 @@ lru_cache_test() ->
   ok = stop(lru_cache).
   
 reset_test() ->
+  ?debugMsg("running reset() tests"),
+  
   InitialState = initial_state(my_name, 123),
   ChangedState = InitialState#state{clock=25},
   ?assertEqual(InitialState, reset_state(ChangedState)),
@@ -347,5 +361,50 @@ reset_test() ->
   ?assertEqual(0, size(reset_cache)),
   ok = stop(reset_cache).
 
+basic_speed_test() ->
+  ?debugMsg("running basic speed test"),
+  cadfaerl:start_link(basic_cache),
+  SimplePutGet =
+    fun() ->
+      lists:foreach(fun(I)-> cadfaerl:put(basic_cache, I, I), cadfaerl:get(basic_cache, I) end,
+                    lists:seq(1, ?SPEED_TEST_OP_COUNT))
+    end,
+  ?debugTime(integer_to_list(?SPEED_TEST_OP_COUNT) ++ " simple put-get", SimplePutGet()),
+  ok = stop(basic_cache).
+
+ttl_put_get_speed_test() ->
+  ?debugMsg("running TTL put-get speed test"),
+  cadfaerl:start_link(ttl_cache),
+  TtlPutGet =
+    fun() ->
+      lists:foreach(fun(I)-> cadfaerl:put_ttl(ttl_cache, I, I, I rem 10), cadfaerl:get(ttl_cache, I) end,
+                    lists:seq(1, ?SPEED_TEST_OP_COUNT))
+      end,
+  ?debugTime(integer_to_list(?SPEED_TEST_OP_COUNT) ++ " TTL put-get", TtlPutGet()),
+  ok = stop(ttl_cache).
+
+lru_put_get_speed_test() ->
+  ?debugMsg("running LRU put-get speed test"),
+  cadfaerl:start_link(lru_cache, 1000),
+  LruPutGet =
+    fun() ->
+      lists:foreach(fun(I)-> cadfaerl:put(lru_cache, I, I), cadfaerl:get(lru_cache, I) end,
+                    lists:seq(1, ?SPEED_TEST_OP_COUNT))
+    end,
+  ?debugTime(integer_to_list(?SPEED_TEST_OP_COUNT) ++ " LRU put-get", LruPutGet()),
+  ok = stop(lru_cache).
+  
+lru_ttl_put_get_speed_test() ->
+  ?debugMsg("running LRU TTL put-get speed test"),
+  cadfaerl:start_link(lru_ttl_cache, 1000),
+  LruTtlPutGet =
+    fun() ->
+      lists:foreach(fun(I)-> cadfaerl:put_ttl(lru_ttl_cache, I, I, I rem 10), cadfaerl:get(lru_ttl_cache, I) end,
+                    lists:seq(1, ?SPEED_TEST_OP_COUNT))
+    end,
+  ?debugTime(integer_to_list(?SPEED_TEST_OP_COUNT) ++ " LRU TTL put-get", LruTtlPutGet()),
+  ok = stop(lru_ttl_cache),
+  ok.
+  
 -endif.
 
