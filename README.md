@@ -73,6 +73,10 @@ Same but use a TTL of 60 seconds when self-populating the cache:
     % after 61 seconds
     undefined = cadfaerl:get(my_cache, my_key).
 
+Get all the keys of a cache, potentially including keys of expired entries:
+
+    Keys = cadfaerl:keys(my_cache).
+
 Remove a value (or ignore if the key is unknown):
 
     ok = cadfaerl:remove(my_cache, my_key).

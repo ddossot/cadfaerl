@@ -16,6 +16,7 @@
          put/3, put_ttl/4,
          get/2, get/3,
          get_or_fetch/3, get_or_fetch_ttl/4,
+         keys/1,
          remove/2,
          size/1, reset/1, stats/1]).
          
@@ -76,6 +77,11 @@ get(CacheName, Key, Default) when is_atom(CacheName) ->
 do_get(CacheName, Key, Default, Ttl) ->
   gen_server:call(CacheName, {get, Key, Default, Ttl}).
 
+%% @doc Retrieve the list of all keys in the cache. Some keys may point to expired values.
+%% @spec keys(CacheName::atom()) -> [Key::term()]
+keys(CacheName) when is_atom(CacheName) ->
+  gen_server:call(CacheName, keys).
+
 %% @doc Remove a value or ignore the command if the key is not present.
 %% @spec remove(CacheName::atom(), Key::term()) -> ok
 remove(CacheName, Key) when is_atom(CacheName) ->
@@ -109,6 +115,9 @@ handle_call({get, Key, Default, Ttl}, _From, State) ->
   {Result, NewState} = get_from_state(Key, Default, Ttl, State),
   {reply, Result, NewState};
   
+handle_call(keys, _From, State=#state{data_dict=DataDict}) ->
+  {reply, dict:fetch_keys(DataDict), State};
+
 handle_call({remove, Key}, _From, State) ->
   {reply, ok, remove_from_state(Key, State)};
 
@@ -263,6 +272,7 @@ basic_put_get_remove_stats_test() ->
   ?assertEqual({ok, <<"other_val">>}, get(basic_cache, my_key)),
   ?assertEqual([{miss_count, 1}, {hit_count, 2}], stats(basic_cache)),
 
+  ?assertEqual([my_key], keys(basic_cache)),
   ?assertEqual(1, size(basic_cache)),
   ?assertEqual(ok, remove(basic_cache, my_key)),
   ?assertEqual(undefined, get(basic_cache, my_key)),
